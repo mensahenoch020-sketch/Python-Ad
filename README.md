@@ -95,8 +95,16 @@ remote command execution.
 |---|---|
 | `protocol.py` | Shared wire protocol: framing, mutual HMAC auth, optional TLS, secret loading. |
 | `agent.py` | The managed endpoint. Reports info and runs commands. Run on the target/VM. |
-| `console.py` | The operator's control server. Run on your admin machine. |
-| `requirements.txt` | The single dependency (`psutil`). |
+| `console.py` | Terminal operator console (raw TCP). Run on your admin machine. |
+| `webconsole.py` | **Web** operator console (FastAPI). Serves the browser UI + agent WebSocket endpoint. Deploy this to Railway. |
+| `static/` | The browser dashboard (`index.html`, `login.html`, `style.css`, `app.js`). |
+| `Procfile`, `railway.json` | Deployment configuration for Railway. |
+| `requirements.txt` | Dependencies (`psutil`, `websocket-client`, plus `fastapi`/`uvicorn` for the web console). |
+
+There are **two** consoles that do the same job through different interfaces:
+`console.py` is a terminal program for local/LAN use; `webconsole.py` is a web
+app for browser access and cloud hosting. Pick whichever suits you — agents work
+with both.
 
 ---
 
@@ -198,6 +206,82 @@ python agent.py --host <console-ip> --port 9009 --ca-cert console_cert.pem
 > The self-signed certificate's `CN` must match the `--host` the agent dials
 > (use `localhost`/`127.0.0.1` for local tests, or the console's hostname/IP on
 > a LAN). For real deployments use a certificate from a trusted CA.
+
+---
+
+## 5b. Web UI
+
+`webconsole.py` is a single [FastAPI](https://fastapi.tiangolo.com/) app that
+serves the operator dashboard, a small JSON API, and the agent WebSocket
+endpoint — all on one HTTP(S) port, which is exactly what cloud hosts like
+Railway expect.
+
+```
+  Browser ──HTTPS (operator login)──┐
+                                     ▼
+                          webconsole.py  (FastAPI / uvicorn)
+                                     ▲
+  Agents  ──WSS (shared-secret HMAC)─┘   path: /ws/agent
+```
+
+Two independent credentials are required, by design:
+
+* **Operator password** (`RAT_OPERATOR_PASSWORD`) — the human logs into the web
+  UI with this. Because the UI is internet-reachable when hosted, this password
+  is what stops a stranger who finds the URL from driving your agents.
+* **Shared secret** (`RAT_SHARED_SECRET`) — agents authenticate with this via
+  the mutual HMAC handshake. It is never transmitted.
+
+### Run the web console locally
+
+```bash
+export RAT_SHARED_SECRET='change-me-strong'
+export RAT_OPERATOR_PASSWORD='change-me-too'
+python -m pip install -r requirements.txt
+
+# start the web console (http://127.0.0.1:9090)
+uvicorn webconsole:app --host 0.0.0.0 --port 9090
+```
+
+Open <http://127.0.0.1:9090>, log in, then in another terminal start an agent
+pointed at the WebSocket endpoint:
+
+```bash
+export RAT_SHARED_SECRET='change-me-strong'
+python agent.py --ws-url ws://127.0.0.1:9090/ws/agent          # safe mode
+# or, for arbitrary command execution (asks for explicit consent):
+python agent.py --ws-url ws://127.0.0.1:9090/ws/agent --allow-shell
+```
+
+The agent appears in the dashboard with its system info; click it to view
+details and run commands.
+
+### Deploy to Railway
+
+1. Push this repository to GitHub and create a new Railway project **from that
+   repo**. Railway auto-detects Python (via `requirements.txt`) and uses the
+   `Procfile` / `railway.json` start command:
+   `uvicorn webconsole:app --host 0.0.0.0 --port $PORT`.
+2. In the Railway service **Variables**, set:
+   * `RAT_SHARED_SECRET` — a long random string.
+   * `RAT_OPERATOR_PASSWORD` — a strong, unique password.
+3. Under **Settings → Networking**, generate a public domain. Railway terminates
+   TLS at its edge, so your app is reachable at `https://<app>.up.railway.app`
+   and agents use the matching `wss://` URL automatically.
+4. Open the domain in a browser and log in.
+5. On each machine/VM you administer, run the agent against the public endpoint:
+   ```bash
+   export RAT_SHARED_SECRET='<same value you set in Railway>'
+   python agent.py --ws-url wss://<app>.up.railway.app/ws/agent
+   ```
+
+> ⚠️ **Public hosting raises the stakes.** Once deployed, the console is a
+> publicly reachable administration panel. Use a strong, unique operator
+> password and shared secret; keep agents in safe (allowlist) mode unless you
+> specifically need `--allow-shell`; and only connect agents on machines you own
+> or are authorised to manage. The in-memory operator sessions and single shared
+> secret are deliberately simple for learning — see the limitations below before
+> trusting this with anything that matters.
 
 ---
 

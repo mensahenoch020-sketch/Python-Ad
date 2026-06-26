@@ -192,6 +192,10 @@ def main() -> None:
                         help="Console (server) address to connect to. Default: 127.0.0.1")
     parser.add_argument("--port", type=int, default=9009,
                         help="Console port. Default: 9009")
+    parser.add_argument("--ws-url", default=None,
+                        help="Connect to a web console over WebSocket instead of raw TCP, "
+                             "e.g. wss://your-app.up.railway.app/ws/agent. When set, "
+                             "--host/--port/--ca-cert are ignored.")
     parser.add_argument("--secret", default=None,
                         help="Shared secret (prefer the RAT_SHARED_SECRET env var instead).")
     parser.add_argument("--allow-shell", action="store_true",
@@ -216,9 +220,11 @@ def main() -> None:
     secret = protocol.load_shared_secret(args.secret)
 
     # Loud, explicit start banner. The machine is NOT reachable until this runs.
+    destination = args.ws_url if args.ws_url else f"{args.host}:{args.port}"
     print("=" * 70)
     print("  Remote Administration AGENT starting")
-    print(f"  This machine will connect to console at {args.host}:{args.port}")
+    print(f"  This machine will connect to console at {destination}")
+    print(f"  Transport: {'WebSocket' if args.ws_url else 'raw TCP'}")
     print(f"  Mode: {'ARBITRARY SHELL (dangerous)' if args.allow_shell else 'SAFE allowlist'}")
     print(f"  Audit log: {args.log_file}")
     print("=" * 70)
@@ -228,7 +234,10 @@ def main() -> None:
 
     while True:
         try:
-            run_session(args, secret, log)
+            if args.ws_url:
+                run_session_ws(args, secret, log)
+            else:
+                run_session_tcp(args, secret, log)
         except (protocol.ProtocolError, OSError) as exc:
             log.error("session ended: %s", exc)
         if not args.reconnect:
@@ -237,29 +246,81 @@ def main() -> None:
         time.sleep(5)
 
 
-def run_session(args: argparse.Namespace, secret: str, log: logging.Logger) -> None:
-    """Open one connection to the console and service it until it closes."""
+def serve(send, recv, secret: str, args: argparse.Namespace, log: logging.Logger) -> None:
+    """Drive one authenticated session over abstract send/recv callables.
+
+    This is the shared heart of both transports: authenticate, announce
+    ourselves, then loop answering the console's requests. `send(obj)` and
+    `recv()` deal in plain dict messages, so the same code works over a raw
+    socket or a WebSocket.
+    """
+    # Prove identity in both directions before doing anything else.
+    protocol.client_authenticate_io(send, recv, secret)
+    log.info("mutual authentication succeeded")
+
+    # Send an unsolicited hello with system info so the console can display the
+    # endpoint immediately on connect.
+    send({"type": "hello", "data": collect_system_info()})
+
+    while True:
+        request = recv()
+        log.info("received request: %s",
+                 request.get("action") if isinstance(request, dict) else request)
+        response = handle_request(request, args.allow_shell, log)
+        send(response)
+        if response.get("type") == "bye":
+            log.info("console requested disconnect")
+            return
+
+
+def run_session_tcp(args: argparse.Namespace, secret: str, log: logging.Logger) -> None:
+    """Open one raw-TCP connection to the console and service it."""
     with socket.create_connection((args.host, args.port), timeout=10) as raw_sock:
         sock = protocol.maybe_wrap_tls_client(raw_sock, args.ca_cert, args.host)
-        log.info("connected to console %s:%s", args.host, args.port)
-
-        # Prove identity in both directions before doing anything else.
-        protocol.client_authenticate(sock, secret)
-        log.info("mutual authentication succeeded")
-
-        # Send an unsolicited hello with system info so the console can display
-        # the endpoint immediately on connect.
-        protocol.send_message(sock, {"type": "hello", "data": collect_system_info()})
-
         sock.settimeout(None)  # block waiting for console commands
-        while True:
-            request = protocol.recv_message(sock)
-            log.info("received request: %s", request.get("action") if isinstance(request, dict) else request)
-            response = handle_request(request, args.allow_shell, log)
-            protocol.send_message(sock, response)
-            if response.get("type") == "bye":
-                log.info("console requested disconnect")
-                return
+        log.info("connected to console %s:%s (TCP)", args.host, args.port)
+        serve(
+            lambda obj: protocol.send_message(sock, obj),
+            lambda: protocol.recv_message(sock),
+            secret, args, log,
+        )
+
+
+def run_session_ws(args: argparse.Namespace, secret: str, log: logging.Logger) -> None:
+    """Open one WebSocket connection to the web console and service it.
+
+    Used for cloud-hosted consoles (e.g. Railway), where a single HTTPS port
+    carries both the browser UI and agent traffic. TLS is provided by the
+    wss:// scheme and the platform's certificate, so no local cert is needed.
+    """
+    try:
+        import websocket  # from the 'websocket-client' package
+    except ImportError as exc:
+        raise protocol.ProtocolError(
+            "WebSocket transport needs the 'websocket-client' package "
+            "(python -m pip install websocket-client)"
+        ) from exc
+
+    ws = websocket.create_connection(args.ws_url, timeout=10)
+    log.info("connected to console %s (WebSocket)", args.ws_url)
+
+    def ws_send(obj: Any) -> None:
+        import json
+        ws.send(json.dumps(obj))
+
+    def ws_recv() -> Any:
+        import json
+        try:
+            return json.loads(ws.recv())
+        except websocket.WebSocketException as exc:
+            raise protocol.ProtocolError(f"websocket error: {exc}") from exc
+
+    try:
+        serve(ws_send, ws_recv, secret, args, log)
+    except websocket.WebSocketException as exc:
+        raise protocol.ProtocolError(f"websocket error: {exc}") from exc
+    finally:
+        ws.close()
 
 
 if __name__ == "__main__":

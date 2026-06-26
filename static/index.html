@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remote Administration Console</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <strong>Remote Administration Console</strong>
+      <span class="muted small">educational — authorised use only</span>
+    </div>
+    <form method="post" action="/logout">
+      <button class="ghost" type="submit">Log out</button>
+    </form>
+  </header>
+
+  <main class="layout">
+    <!-- Left: list of connected agents, refreshed by polling. -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Agents</h2>
+        <span id="agent-count" class="badge">0</span>
+      </div>
+      <ul id="agent-list" class="agent-list"></ul>
+      <p class="muted small">
+        Agents appear here after they connect and authenticate. Start one with
+        <code>agent.py --ws-url wss://&lt;this-host&gt;/ws/agent</code>.
+      </p>
+    </section>
+
+    <!-- Right: detail + command panel for the selected agent. -->
+    <section class="panel detail">
+      <div id="empty-detail" class="muted center">
+        Select an agent on the left to view its system information and send
+        commands.
+      </div>
+
+      <div id="agent-detail" hidden>
+        <div class="panel-head">
+          <h2 id="detail-title">—</h2>
+          <button class="ghost" id="refresh-btn">Refresh info</button>
+        </div>
+
+        <dl id="sysinfo" class="sysinfo"></dl>
+
+        <h3>Run command</h3>
+        <p class="muted small">
+          In the agent's <strong>safe mode</strong> only allowlisted read-only
+          commands run (uptime, disk, processes, whoami, date). Arbitrary
+          commands require the agent to be started with <code>--allow-shell</code>.
+        </p>
+        <form id="cmd-form" class="cmd-form">
+          <input id="cmd-input" type="text" placeholder="e.g. uptime" autocomplete="off" />
+          <button type="submit">Run</button>
+        </form>
+        <pre id="cmd-output" class="output" aria-live="polite"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

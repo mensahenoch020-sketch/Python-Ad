@@ -145,77 +145,107 @@ def _new_nonce() -> str:
     return secrets.token_hex(NONCE_BYTES)
 
 
-def server_authenticate(sock: socket.socket, secret: str) -> None:
-    """Run the console's half of the mutual handshake.
+# -- public handshake primitives -------------------------------------------
+# These three small functions are the building blocks of the handshake. They
+# are transport-agnostic (no sockets, no JSON), so the raw-socket console, the
+# WebSocket web console, and the agent can all share exactly the same crypto.
+
+def new_challenge() -> str:
+    """Return a fresh, unpredictable challenge nonce (hex string)."""
+    return _new_nonce()
+
+
+def proof_for(secret: str, nonce: str) -> str:
+    """Return the HMAC proof that a holder of `secret` returns for `nonce`."""
+    return _hmac_hex(secret, nonce)
+
+
+def verify_proof(secret: str, nonce: str, proof: object) -> bool:
+    """Constant-time check that `proof` is the correct HMAC for `nonce`.
+
+    Uses hmac.compare_digest so the comparison does not leak, through timing,
+    how many leading characters matched.
+    """
+    return isinstance(proof, str) and hmac.compare_digest(proof, _hmac_hex(secret, nonce))
+
+
+# -- transport-agnostic mutual handshake -----------------------------------
+# `send(obj)` transmits one JSON-serialisable message; `recv()` returns the
+# next one. By accepting these callables instead of a socket, the same logic
+# drives both TCP sockets and WebSockets.
+
+def server_authenticate_io(send, recv, secret: str) -> None:
+    """Console half of the mutual handshake over abstract send/recv callables.
 
     Steps (the console is the "server" here):
         1. Send a random challenge nonce to the agent.
         2. Receive the agent's response HMAC *and* the agent's own challenge.
         3. Verify the agent's HMAC. If wrong, abort.
         4. Prove ourselves by answering the agent's challenge.
-
-    Raises AuthenticationError if the agent fails to prove knowledge of the
-    secret.
     """
-    server_nonce = _new_nonce()
-    send_message(sock, {"type": "auth_challenge", "nonce": server_nonce})
+    server_nonce = new_challenge()
+    send({"type": "auth_challenge", "nonce": server_nonce})
 
-    reply = recv_message(sock)
+    reply = recv()
     if not isinstance(reply, dict) or reply.get("type") != "auth_response":
         raise AuthenticationError("expected auth_response from agent")
-
-    agent_proof = reply.get("proof", "")
-    agent_nonce = reply.get("nonce", "")
-    expected = _hmac_hex(secret, server_nonce)
-
-    # hmac.compare_digest is a constant-time comparison: it does not leak,
-    # through timing, how many leading characters matched. Always use it when
-    # comparing secrets or MACs.
-    if not isinstance(agent_proof, str) or not hmac.compare_digest(agent_proof, expected):
+    if not verify_proof(secret, server_nonce, reply.get("proof", "")):
         raise AuthenticationError("agent failed authentication (bad secret)")
-
+    agent_nonce = reply.get("nonce", "")
     if not isinstance(agent_nonce, str) or not agent_nonce:
         raise AuthenticationError("agent did not supply a challenge nonce")
 
-    # The agent is genuine; now prove ourselves to the agent so it knows the
-    # console is genuine too (mutual authentication).
-    send_message(sock, {"type": "auth_confirm", "proof": _hmac_hex(secret, agent_nonce)})
+    # The agent is genuine; now prove ourselves to it (mutual authentication).
+    send({"type": "auth_confirm", "proof": proof_for(secret, agent_nonce)})
 
 
-def client_authenticate(sock: socket.socket, secret: str) -> None:
-    """Run the agent's half of the mutual handshake.
+def client_authenticate_io(send, recv, secret: str) -> None:
+    """Agent half of the mutual handshake over abstract send/recv callables.
 
-    Mirror image of `server_authenticate`:
+    Mirror image of `server_authenticate_io`:
         1. Receive the console's challenge nonce.
         2. Answer it, and include our own fresh challenge nonce.
         3. Verify the console's answer to our challenge.
-
-    Raises AuthenticationError if the console cannot prove knowledge of the
-    secret (i.e. we may be talking to an impostor console).
     """
-    challenge = recv_message(sock)
+    challenge = recv()
     if not isinstance(challenge, dict) or challenge.get("type") != "auth_challenge":
         raise AuthenticationError("expected auth_challenge from console")
-
     server_nonce = challenge.get("nonce", "")
     if not isinstance(server_nonce, str) or not server_nonce:
         raise AuthenticationError("console did not supply a challenge nonce")
 
-    client_nonce = _new_nonce()
-    send_message(sock, {
+    client_nonce = new_challenge()
+    send({
         "type": "auth_response",
-        "proof": _hmac_hex(secret, server_nonce),
+        "proof": proof_for(secret, server_nonce),
         "nonce": client_nonce,
     })
 
-    confirm = recv_message(sock)
+    confirm = recv()
     if not isinstance(confirm, dict) or confirm.get("type") != "auth_confirm":
         raise AuthenticationError("expected auth_confirm from console")
-
-    expected = _hmac_hex(secret, client_nonce)
-    server_proof = confirm.get("proof", "")
-    if not isinstance(server_proof, str) or not hmac.compare_digest(server_proof, expected):
+    if not verify_proof(secret, client_nonce, confirm.get("proof", "")):
         raise AuthenticationError("console failed authentication (possible impostor)")
+
+
+# -- raw-socket convenience wrappers ---------------------------------------
+
+def server_authenticate(sock: socket.socket, secret: str) -> None:
+    """Console half of the handshake over a raw TCP socket."""
+    server_authenticate_io(
+        lambda obj: send_message(sock, obj),
+        lambda: recv_message(sock),
+        secret,
+    )
+
+
+def client_authenticate(sock: socket.socket, secret: str) -> None:
+    """Agent half of the handshake over a raw TCP socket."""
+    client_authenticate_io(
+        lambda obj: send_message(sock, obj),
+        lambda: recv_message(sock),
+        secret,
+    )
 
 
 # ---------------------------------------------------------------------------
