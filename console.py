@@ -37,6 +37,7 @@ class AgentConnection:
     """Bookkeeping for one connected, authenticated agent."""
     sock: socket.socket
     address: tuple[str, int]
+    identity: str = "default"
     info: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
     alive: bool = True
@@ -44,14 +45,23 @@ class AgentConnection:
     @property
     def label(self) -> str:
         host = self.info.get("hostname", "?")
-        return f"{host} ({self.address[0]}:{self.address[1]})"
+        return f"{self.identity}/{host} ({self.address[0]}:{self.address[1]})"
 
 
 class Console:
     """Holds shared state: the registry of connected agents and the audit log."""
 
-    def __init__(self, secret: str, log: logging.Logger) -> None:
-        self.secret = secret
+    def __init__(self, credentials: dict[str, str], log: logging.Logger) -> None:
+        # Map of identity -> secret. The resolver hands the handshake the right
+        # secret for whichever identity an agent claims.
+        self.credentials = credentials
+        if list(credentials) == ["default"]:
+            # Single shared-secret mode: accept any identity and use the one
+            # secret (passing a plain string makes the handshake ignore identity).
+            self.resolve_secret = credentials["default"]
+        else:
+            # Per-agent mode: each identity must match a key in the credentials.
+            self.resolve_secret = credentials.get
         self.log = log
         self._agents: dict[int, AgentConnection] = {}
         self._next_id = 1
@@ -86,8 +96,9 @@ class Console:
         self.log.info("incoming connection from %s:%s", *address)
         try:
             sock = protocol.maybe_wrap_tls_server(raw_sock, certfile, keyfile)
-            # The console plays the "server" role in the mutual handshake.
-            protocol.server_authenticate(sock, self.secret)
+            # The console plays the "server" role in the mutual handshake, looking
+            # up each claimed identity's own secret via the resolver.
+            identity = protocol.server_authenticate(sock, self.resolve_secret)
         except protocol.AuthenticationError as exc:
             self.log.warning("AUTH FAILED from %s:%s — %s", address[0], address[1], exc)
             raw_sock.close()
@@ -97,7 +108,7 @@ class Console:
             raw_sock.close()
             return
 
-        conn = AgentConnection(sock=sock, address=address)
+        conn = AgentConnection(sock=sock, address=address, identity=identity)
 
         # Expect the agent's unsolicited hello carrying its system info.
         try:
@@ -292,7 +303,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=9009,
                         help="Port to listen on. Default: 9009")
     parser.add_argument("--secret", default=None,
-                        help="Shared secret (prefer the RAT_SHARED_SECRET env var instead).")
+                        help="Single shared secret (prefer the RAT_SHARED_SECRET env var). "
+                             "Ignored when RAT_CREDENTIALS_FILE provides per-agent secrets.")
     parser.add_argument("--tls-cert", default=None,
                         help="Path to TLS certificate (enables encryption).")
     parser.add_argument("--tls-key", default=None,
@@ -308,8 +320,10 @@ def main() -> None:
     )
     log = logging.getLogger("console")
 
-    secret = protocol.load_shared_secret(args.secret)
-    console = Console(secret, log)
+    # Per-agent credentials when RAT_CREDENTIALS_FILE is set, else a single
+    # shared secret under the "default" identity.
+    credentials = protocol.load_credentials(args.secret)
+    console = Console(credentials, log)
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -320,6 +334,9 @@ def main() -> None:
     print("  Remote Administration CONSOLE")
     print(f"  Listening on {args.host}:{args.port}")
     print(f"  TLS: {'ON' if args.tls_cert else 'OFF (trusted LAN/VM only)'}")
+    cred_mode = ("single shared secret" if list(credentials) == ["default"]
+                 else f"{len(credentials)} per-agent identities")
+    print(f"  Credentials: {cred_mode}")
     print(f"  Audit log: {args.log_file}")
     print("=" * 70)
     log.info("console listening on %s:%s", args.host, args.port)

@@ -200,6 +200,10 @@ def main() -> None:
                         help="Shared secret (prefer the RAT_SHARED_SECRET env var instead).")
     parser.add_argument("--allow-shell", action="store_true",
                         help="DANGEROUS: permit arbitrary command execution (requires consent).")
+    parser.add_argument("--identity", default=socket.gethostname(),
+                        help="This agent's identity name. The console looks up the matching "
+                             "secret for this identity in its credentials file. "
+                             "Default: this machine's hostname.")
     parser.add_argument("--reconnect", action="store_true",
                         help="Automatically reconnect if the console drops the connection.")
     parser.add_argument("--ca-cert", default=None,
@@ -224,6 +228,7 @@ def main() -> None:
     print("=" * 70)
     print("  Remote Administration AGENT starting")
     print(f"  This machine will connect to console at {destination}")
+    print(f"  Identity: {args.identity}")
     print(f"  Transport: {'WebSocket' if args.ws_url else 'raw TCP'}")
     print(f"  Mode: {'ARBITRARY SHELL (dangerous)' if args.allow_shell else 'SAFE allowlist'}")
     print(f"  Audit log: {args.log_file}")
@@ -255,8 +260,8 @@ def serve(send, recv, secret: str, args: argparse.Namespace, log: logging.Logger
     socket or a WebSocket.
     """
     # Prove identity in both directions before doing anything else.
-    protocol.client_authenticate_io(send, recv, secret)
-    log.info("mutual authentication succeeded")
+    protocol.client_authenticate_io(send, recv, secret, identity=args.identity)
+    log.info("mutual authentication succeeded (identity=%s)", args.identity)
 
     # Send an unsolicited hello with system info so the console can display the
     # endpoint immediately on connect.

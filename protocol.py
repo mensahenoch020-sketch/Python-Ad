@@ -174,14 +174,32 @@ def verify_proof(secret: str, nonce: str, proof: object) -> bool:
 # next one. By accepting these callables instead of a socket, the same logic
 # drives both TCP sockets and WebSockets.
 
-def server_authenticate_io(send, recv, secret: str) -> None:
+def _resolve_secret(resolve_secret, identity: str) -> Optional[str]:
+    """Turn a secret OR an identity->secret lookup into a concrete secret.
+
+    `resolve_secret` may be either a plain string (a single fixed secret, used
+    for the simple shared-secret deployment) or a callable that maps the agent's
+    claimed identity to that identity's own secret (per-agent credentials).
+    Returns None when the identity is unknown.
+    """
+    if callable(resolve_secret):
+        return resolve_secret(identity)
+    return resolve_secret
+
+
+def server_authenticate_io(send, recv, resolve_secret) -> str:
     """Console half of the mutual handshake over abstract send/recv callables.
 
     Steps (the console is the "server" here):
         1. Send a random challenge nonce to the agent.
-        2. Receive the agent's response HMAC *and* the agent's own challenge.
-        3. Verify the agent's HMAC. If wrong, abort.
+        2. Receive the agent's identity, its response HMAC, and its own challenge.
+        3. Look up the secret for that identity and verify the agent's HMAC.
         4. Prove ourselves by answering the agent's challenge.
+
+    `resolve_secret` is either a fixed secret string or a callable mapping the
+    agent's claimed `identity` to its secret (see `_resolve_secret`).
+
+    Returns the authenticated agent identity so the caller can log/register it.
     """
     server_nonce = new_challenge()
     send({"type": "auth_challenge", "nonce": server_nonce})
@@ -189,22 +207,34 @@ def server_authenticate_io(send, recv, secret: str) -> None:
     reply = recv()
     if not isinstance(reply, dict) or reply.get("type") != "auth_response":
         raise AuthenticationError("expected auth_response from agent")
+
+    # The identity is untrusted until the HMAC proves the agent holds that
+    # identity's secret. We only use it to *select* which secret to check.
+    identity = reply.get("identity", "default")
+    if not isinstance(identity, str) or not identity:
+        raise AuthenticationError("agent did not supply an identity")
+
+    secret = _resolve_secret(resolve_secret, identity)
+    if not secret:
+        raise AuthenticationError(f"unknown agent identity: {identity!r}")
     if not verify_proof(secret, server_nonce, reply.get("proof", "")):
-        raise AuthenticationError("agent failed authentication (bad secret)")
+        raise AuthenticationError(f"agent {identity!r} failed authentication (bad secret)")
+
     agent_nonce = reply.get("nonce", "")
     if not isinstance(agent_nonce, str) or not agent_nonce:
         raise AuthenticationError("agent did not supply a challenge nonce")
 
     # The agent is genuine; now prove ourselves to it (mutual authentication).
     send({"type": "auth_confirm", "proof": proof_for(secret, agent_nonce)})
+    return identity
 
 
-def client_authenticate_io(send, recv, secret: str) -> None:
+def client_authenticate_io(send, recv, secret: str, identity: str = "default") -> None:
     """Agent half of the mutual handshake over abstract send/recv callables.
 
     Mirror image of `server_authenticate_io`:
         1. Receive the console's challenge nonce.
-        2. Answer it, and include our own fresh challenge nonce.
+        2. Answer it, announce our `identity`, and include our own fresh nonce.
         3. Verify the console's answer to our challenge.
     """
     challenge = recv()
@@ -217,6 +247,7 @@ def client_authenticate_io(send, recv, secret: str) -> None:
     client_nonce = new_challenge()
     send({
         "type": "auth_response",
+        "identity": identity,
         "proof": proof_for(secret, server_nonce),
         "nonce": client_nonce,
     })
@@ -230,21 +261,22 @@ def client_authenticate_io(send, recv, secret: str) -> None:
 
 # -- raw-socket convenience wrappers ---------------------------------------
 
-def server_authenticate(sock: socket.socket, secret: str) -> None:
-    """Console half of the handshake over a raw TCP socket."""
-    server_authenticate_io(
+def server_authenticate(sock: socket.socket, resolve_secret) -> str:
+    """Console half of the handshake over a raw TCP socket. Returns the identity."""
+    return server_authenticate_io(
         lambda obj: send_message(sock, obj),
         lambda: recv_message(sock),
-        secret,
+        resolve_secret,
     )
 
 
-def client_authenticate(sock: socket.socket, secret: str) -> None:
+def client_authenticate(sock: socket.socket, secret: str, identity: str = "default") -> None:
     """Agent half of the handshake over a raw TCP socket."""
     client_authenticate_io(
         lambda obj: send_message(sock, obj),
         lambda: recv_message(sock),
         secret,
+        identity,
     )
 
 
@@ -312,3 +344,50 @@ def load_shared_secret(explicit: Optional[str] = None) -> str:
         "Set one with:  export RAT_SHARED_SECRET='your-strong-passphrase'\n"
         "or pass --secret on the command line (less secure)."
     )
+
+
+def load_credentials(explicit_secret: Optional[str] = None) -> dict[str, str]:
+    """Resolve the console's agent credentials as an {identity: secret} map.
+
+    Two modes, chosen by whether RAT_CREDENTIALS_FILE is set:
+
+      * Per-agent (recommended for shared/public hosting): point
+        RAT_CREDENTIALS_FILE at a JSON file mapping each agent's identity to its
+        own secret, e.g. {"laptop-vm": "secret-one", "web-server": "secret-two"}.
+        A leaked secret then exposes only that one agent, and you can revoke an
+        agent by removing its line.
+
+      * Single shared secret (the original behaviour): if no file is configured,
+        fall back to one secret (from `load_shared_secret`) under the identity
+        "default". Existing single-secret setups keep working unchanged.
+
+    The console must hold each agent's raw secret because the HMAC handshake is
+    symmetric; for production you would move to asymmetric per-agent keys
+    (e.g. mutual-TLS client certificates).
+    """
+    path = os.environ.get("RAT_CREDENTIALS_FILE")
+    if not path:
+        return {"default": load_shared_secret(explicit_secret)}
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except OSError as exc:
+        raise SystemExit(f"Could not read RAT_CREDENTIALS_FILE {path!r}: {exc}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"RAT_CREDENTIALS_FILE {path!r} is not valid JSON: {exc}")
+
+    if not isinstance(data, dict) or not data:
+        raise SystemExit(
+            f"RAT_CREDENTIALS_FILE {path!r} must be a non-empty JSON object "
+            '{"identity": "secret", ...}'
+        )
+    credentials: dict[str, str] = {}
+    for identity, secret in data.items():
+        if not isinstance(identity, str) or not isinstance(secret, str) or not secret.strip():
+            raise SystemExit(
+                f"RAT_CREDENTIALS_FILE {path!r}: every entry must map a "
+                "non-empty string identity to a non-empty string secret."
+            )
+        credentials[identity] = secret
+    return credentials
