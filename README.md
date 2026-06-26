@@ -283,6 +283,47 @@ details and run commands.
 > secret are deliberately simple for learning — see the limitations below before
 > trusting this with anything that matters.
 
+### Using it from your phone (no laptop)
+
+You do **not** need a laptop. The operator console is a web app and the UI is
+mobile-responsive, so you can both deploy it and drive it entirely from a phone
+browser. The code is already on GitHub, and Railway builds straight from GitHub —
+so you never need a terminal or `git push` from a computer.
+
+**A. Deploy to Railway from your phone (browser only)**
+
+1. The code is already on GitHub on the branch
+   `claude/python-remote-admin-tool-xvs3s5`.
+2. In your phone's browser, open **railway.app** and sign in with GitHub.
+3. **New Project → Deploy from GitHub repo →** pick the repository, then choose
+   that branch.
+4. Railway auto-detects Python (`requirements.txt`) and uses the `Procfile` /
+   `railway.json` start command — there is nothing to configure for the build.
+5. Open the service's **Variables** tab and add:
+   * `RAT_SHARED_SECRET` — a long random string.
+   * `RAT_OPERATOR_PASSWORD` — a strong password (this is your dashboard login).
+6. **Settings → Networking → Generate Domain.** Wait for the deploy to turn
+   green.
+
+> On a phone, stick with the single shared secret above. The per-agent
+> `RAT_CREDENTIALS_FILE` option needs a file placed on the host, which is awkward
+> to set up without a computer.
+
+**B. Operate the dashboard from your phone**
+
+1. Open `https://<app>.up.railway.app` in your phone browser.
+2. Log in with your `RAT_OPERATOR_PASSWORD`. The layout collapses to a single
+   column on narrow screens.
+3. The agent list, system-info cards, and the command box all work by tap; the
+   list refreshes itself every couple of seconds.
+
+> **Heads-up:** the dashboard will be **empty until an agent connects.** With
+> only a phone you have nothing to manage yet — the console is the *controller*,
+> and you still need to run `agent.py` somewhere to have a device to view or
+> control. The usual options are a cloud VM/computer you own, or the phone
+> itself via [Termux](https://termux.dev/) on Android. Ask and I can write a
+> step-by-step Termux agent guide.
+
 ---
 
 ## 6. Security model & limitations (read this)
