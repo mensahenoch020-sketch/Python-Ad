@@ -1,0 +1,14 @@
+# Audit logs produced at runtime
+*audit.log
+*.log
+
+# TLS material — never commit private keys or certs
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
