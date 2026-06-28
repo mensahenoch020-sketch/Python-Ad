@@ -1,4 +1,4 @@
-# TikTok Growth Engine has no third-party dependencies.
-# It runs on the Python 3.7+ standard library alone.
-#
-#   python tiktok_growth.py plan
+# The CLI (tiktok_growth.py) needs nothing but the standard library.
+# The web app / PWA (app.py) needs FastAPI + an ASGI server.
+fastapi>=0.110
+uvicorn[standard]>=0.29

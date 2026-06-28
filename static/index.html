@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>TikTok Growth Engine</title>
+  <meta name="description" content="Your personal TikTok growth coach." />
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0b0f1a" />
+
+  <!-- iOS install / standalone -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TT Growth" />
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png" />
+
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <span class="logo">▲</span>
+    <h1 id="title">TikTok Growth</h1>
+    <span id="niche-pill" class="pill hidden"></span>
+  </header>
+
+  <main id="app">
+    <!-- ============ TODAY ============ -->
+    <section data-tab="today" class="tab active">
+      <div id="today-card" class="card hero">
+        <div class="muted">Loading…</div>
+      </div>
+      <div class="row">
+        <button class="btn" data-go="ideas">💡 Idea generator</button>
+        <button class="btn" data-go="plan">📋 Checklist</button>
+      </div>
+      <div id="setup-prompt"></div>
+    </section>
+
+    <!-- ============ PLAN (schedule + hashtags + score + checklist) ============ -->
+    <section data-tab="plan" class="tab">
+      <div class="card">
+        <h2>📅 Posting schedule</h2>
+        <div id="schedule" class="muted">Loading…</div>
+        <a class="btn ghost" id="ics-btn" href="/api/schedule.ics">⬇︎ Add to iPhone Calendar (.ics)</a>
+      </div>
+
+      <div class="card">
+        <h2># Hashtags</h2>
+        <input id="hash-topic" placeholder="this video's topic, e.g. uk election" />
+        <button class="btn" id="hash-btn">Get hashtags</button>
+        <div id="hash-out"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎯 Score a video idea</h2>
+        <input id="score-hook" placeholder="Your hook (first 2 seconds)" />
+        <label class="check"><input type="checkbox" id="score-visual" /> Motion / visual surprise in frame 1</label>
+        <label class="check"><input type="checkbox" id="score-payoff" /> Clear payoff to watch to the end</label>
+        <label class="field">Length (seconds)
+          <input id="score-length" type="number" value="22" min="3" max="600" />
+        </label>
+        <button class="btn" id="score-btn">Score it</button>
+        <div id="score-out"></div>
+      </div>
+
+      <div class="card">
+        <h2>✅ Pre-publish checklist</h2>
+        <div id="checklist" class="muted">Loading…</div>
+      </div>
+    </section>
+
+    <!-- ============ IDEAS ============ -->
+    <section data-tab="ideas" class="tab">
+      <div class="card">
+        <h2>💡 Video ideas</h2>
+        <input id="ideas-topic" placeholder="topic, e.g. uk election results" />
+        <button class="btn" id="ideas-btn">Generate ideas</button>
+        <div id="ideas-out"></div>
+      </div>
+      <div class="card">
+        <h2>✍️ Caption builder</h2>
+        <input id="cap-hook" placeholder="Hook / first line" />
+        <input id="cap-cta" placeholder="Call to action (optional)" />
+        <input id="cap-tags" placeholder="hashtags (space separated)" />
+        <button class="btn" id="cap-btn">Build caption</button>
+        <textarea id="cap-out" rows="5" readonly placeholder="Your caption appears here…"></textarea>
+        <button class="btn ghost" id="cap-copy">Copy caption</button>
+      </div>
+    </section>
+
+    <!-- ============ LOG ============ -->
+    <section data-tab="log" class="tab">
+      <div class="card">
+        <h2>📝 Log a post</h2>
+        <p class="muted">Record a video you published so the engine learns your real best times.</p>
+        <input id="log-desc" placeholder="Description / hook" />
+        <div class="grid2">
+          <label class="field">Day
+            <select id="log-day"></select>
+          </label>
+          <label class="field">Hour (0-23)
+            <input id="log-hour" type="number" min="0" max="23" value="9" />
+          </label>
+        </div>
+        <div class="grid3">
+          <label class="field">Views<input id="log-views" type="number" value="0" min="0" /></label>
+          <label class="field">Likes<input id="log-likes" type="number" value="0" min="0" /></label>
+          <label class="field">Comments<input id="log-comments" type="number" value="0" min="0" /></label>
+        </div>
+        <input id="log-tags" placeholder="hashtags used (optional)" />
+        <button class="btn" id="log-btn">Save post</button>
+        <div id="log-out"></div>
+      </div>
+    </section>
+
+    <!-- ============ STATS ============ -->
+    <section data-tab="stats" class="tab">
+      <div class="card">
+        <h2>📊 What's working</h2>
+        <div id="stats" class="muted">Loading…</div>
+      </div>
+    </section>
+
+    <!-- ============ GUIDE / TUTORIAL ============ -->
+    <section data-tab="guide" class="tab">
+      <div class="card">
+        <h2>👋 How to use this app</h2>
+        <ol class="guide">
+          <li><b>Set up once.</b> Tap <i>Today</i> → <i>Set up</i> and enter your niche, how many videos a week you can post, your audience, and timezone.</li>
+          <li><b>Install on your phone.</b> In Safari tap <b>Share → Add to Home Screen</b>. It then opens full-screen like a real app.</li>
+          <li><b>Each morning open <i>Today</i>.</b> It shows your next posting slot and a countdown.</li>
+          <li><b>Plan a video.</b> Go to <i>Ideas</i>, type a topic, and pick a high-scoring hook. Build a caption with the <i>Caption builder</i>.</li>
+          <li><b>Before you post,</b> open <i>Plan</i> → run the <i>checklist</i>, grab a <i>hashtag</i> set, and <i>score</i> your idea (aim for 8+/10).</li>
+          <li><b>Post at your scheduled slot.</b> Tap <i>Add to iPhone Calendar</i> in <i>Plan</i> so your slots show up with reminders.</li>
+          <li><b>After 24-48h, log it.</b> Go to <i>Log</i> and enter views/likes/comments. After 10 logged posts the schedule & stats personalise to YOUR audience.</li>
+          <li><b>Weekly, check <i>Stats</i></b> — double down on your best day, format, and hashtags.</li>
+        </ol>
+        <h3>The 3 non-negotiables</h3>
+        <ul class="guide">
+          <li><b>Hook:</b> earn the first 2 seconds or nothing else matters.</li>
+          <li><b>Completion:</b> short + a payoff = shown to more people.</li>
+          <li><b>Consistency:</b> 1 post/day for 30 days beats 30 in one day.</li>
+        </ul>
+        <p class="fine">No app can <i>guarantee</i> views — TikTok's ranking is private. This is a coach + analytics tool, with no bots or fake engagement. Good content + consistency does the heavy lifting.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button class="tabbtn active" data-go="today"><span>🏠</span>Today</button>
+    <button class="tabbtn" data-go="plan"><span>📅</span>Plan</button>
+    <button class="tabbtn" data-go="ideas"><span>💡</span>Ideas</button>
+    <button class="tabbtn" data-go="log"><span>📝</span>Log</button>
+    <button class="tabbtn" data-go="stats"><span>📊</span>Stats</button>
+    <button class="tabbtn" data-go="guide"><span>❓</span>Guide</button>
+  </nav>
+
+  <!-- Setup modal -->
+  <div id="setup-modal" class="modal hidden">
+    <div class="card modal-card">
+      <h2>Set up your account</h2>
+      <label class="field">Niche
+        <input id="su-niche" placeholder="news, fitness, comedy…" />
+      </label>
+      <label class="field">Videos per week
+        <input id="su-ppw" type="number" min="1" max="21" value="7" />
+      </label>
+      <label class="field">Your target viewer
+        <input id="su-audience" placeholder="e.g. UK viewers who want fast news" />
+      </label>
+      <label class="field">Timezone label
+        <input id="su-tz" placeholder="GMT / EST / PST" value="GMT" />
+      </label>
+      <div class="row">
+        <button class="btn" id="su-save">Save</button>
+        <button class="btn ghost" id="su-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
