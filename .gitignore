@@ -1,11 +1,5 @@
-# Audit logs produced at runtime
-*audit.log
-*.log
-
-# TLS material — never commit private keys or certs
-*.pem
-*.key
-*.crt
+# Local user data produced at runtime (your posts + profile)
+tiktok_data.json
 
 # Python
 __pycache__/

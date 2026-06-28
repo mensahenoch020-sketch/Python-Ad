@@ -1,10 +1,4 @@
-# --- Core (CLI tools: agent.py + console.py) ---
-# psutil provides cross-platform CPU and memory statistics.
-psutil>=5.9
-# websocket-client lets the agent connect to the web console over wss://.
-websocket-client>=1.7
-
-# --- Web console (webconsole.py, e.g. on Railway) ---
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9   # required by FastAPI to parse the login form
+# TikTok Growth Engine has no third-party dependencies.
+# It runs on the Python 3.7+ standard library alone.
+#
+#   python tiktok_growth.py plan

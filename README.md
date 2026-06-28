@@ -1,366 +1,88 @@
-# Educational Remote Administration Tool (RAT)
+# TikTok Growth Engine
 
-A small, heavily commented Python project that demonstrates how a **secure
-remote system administration tool** works: an *agent* runs on a managed machine
-and connects to an operator's *console*, authenticates with a shared secret,
-reports system information, and executes administrative commands.
+A small, dependency-free Python command-line tool that turns the well-known
+TikTok growth playbook into something you can actually **run**: when to post,
+how to post, which hashtags to use — and, most importantly, it **learns from
+your own posts** to personalise the advice over time.
 
-It is built to **teach the concepts** behind tools like SSH, Ansible, Salt, and
-commercial endpoint-management agents — authentication, message framing, audit
-logging, and the trade-off between convenience and the danger of arbitrary
-remote command execution.
-
-> ⚠️ **Authorised, educational use only.** Run this only on machines you own or
-> are explicitly authorised to administer, ideally inside virtual machines on an
-> isolated network. A tool that runs commands sent over a network is, by its
-> nature, dual-use. Deploying software like this on a computer without the
-> owner's knowledge and consent is unethical and, in most jurisdictions,
-> illegal. This project intentionally favours transparency over stealth: it
-> announces itself loudly, logs everything, and requires explicit consent for
-> its dangerous mode.
+```
+python tiktok_growth.py plan        # your full weekly action plan
+```
 
 ---
 
-## 1. What it does
+## What it does
 
-| Capability | Detail |
+| Command | What you get |
 |---|---|
-| **Explicit start** | The agent does nothing until *you* run it, and it prints a loud start banner. |
-| **System reporting** | Hostname, OS, Python version, CPU usage, memory usage, core count, current user. |
-| **Authentication** | Mutual HMAC-SHA256 challenge/response using a pre-shared secret. The secret never crosses the network. |
-| **Connection logging** | Both programs write timestamped audit logs (screen + file) for connects, auth results, disconnects, and every command. |
-| **Command execution** | *Safe mode* (default): a small allowlist of read-only diagnostics. *Shell mode* (`--allow-shell`): arbitrary commands, gated behind an explicit `I CONSENT` prompt. |
-| **Optional TLS** | Supply a certificate to encrypt all traffic. Without it, use only on a trusted/isolated LAN. |
+| `setup` | One-time: set your niche, timezone, posting cadence, audience. |
+| `plan` | The full weekly "algorithm": the loop + this week's slots + angles. |
+| `schedule` | A personalised weekly posting schedule (best days/times). |
+| `hashtags "topic words"` | A balanced broad / niche / micro hashtag set for a video. |
+| `score` | An interactive hook/idea scorer (rates your video 0–10 and tells you what to fix). |
+| `checklist` | A pre-publish "how to post" checklist for maximum reach. |
+| `log` | Record a post you published (views, likes, comments, tags). |
+| `stats` | What's working: best day, top posts, best hashtags, engagement rate. |
+
+Everything is stored locally in `tiktok_data.json` next to the script.
 
 ---
 
-## 2. Networking architecture
+## Quick start
 
+```bash
+# 1. One-time setup
+python tiktok_growth.py setup
+
+# 2. See your weekly plan and posting slots
+python tiktok_growth.py plan
+
+# 3. Before filming a video, score the idea
+python tiktok_growth.py score
+
+# 4. Get hashtags for that specific video
+python tiktok_growth.py hashtags "high protein breakfast"
+
+# 5. Run the checklist before you upload
+python tiktok_growth.py checklist
+
+# 6. After ~24-48h, log how each post did
+python tiktok_growth.py log
+
+# 7. Weekly, review what's working
+python tiktok_growth.py stats
 ```
-   Operator's machine                         Managed machine (yours / a VM)
-  ┌───────────────────┐                       ┌───────────────────┐
-  │     console.py    │                       │      agent.py     │
-  │  (the "server")   │                       │  (the "client")   │
-  │                   │   1. TCP connect      │                   │
-  │  listen :9009  ◄──┼───────────────────────┤  connect out      │
-  │                   │                       │                   │
-  │                   │   2. Mutual HMAC       │                   │
-  │  challenge ──────►│      handshake        │                   │
-  │  ◄──── response + new challenge            │                   │
-  │  confirm ────────►│                       │                   │
-  │                   │                       │                   │
-  │                   │   3. hello + sysinfo  │                   │
-  │  ◄────────────────┼───────────────────────┤                   │
-  │                   │                       │                   │
-  │                   │   4. request/response │                   │
-  │  {action:exec} ──►│      (length-prefixed │                   │
-  │  ◄──── {result}   │       JSON frames)    │                   │
-  └───────────────────┘                       └───────────────────┘
-```
 
-**Key design choices and *why*:**
-
-1. **The agent connects *out* to the console.** This mirrors how real fleet
-   agents work and is friendlier to firewalls/NAT (only the console needs an
-   open inbound port). It also means the console never has to scan or reach into
-   networks looking for hosts.
-
-2. **Length-prefixed JSON frames** (`protocol.py`). TCP is a byte *stream* with
-   no message boundaries. Every message is sent as a 4-byte big-endian length
-   followed by that many bytes of UTF-8 JSON, so the receiver can always
-   reassemble exact messages. A maximum size cap guards against memory-exhaustion.
-
-3. **Mutual HMAC-SHA256 challenge/response** (`protocol.py`). The secret is
-   never transmitted. Each side sends the other a random *nonce*; each proves it
-   knows the secret by returning `HMAC(secret, nonce)`. Fresh nonces make
-   captured handshakes useless for replay. Mutual proof means an agent will
-   refuse to talk to an impostor console. Comparisons use
-   `hmac.compare_digest` (constant-time) to avoid timing leaks.
-
-4. **Authentication ≠ encryption.** HMAC proves *who* you are talking to and that
-   messages were not tampered with, but the JSON itself is readable on the wire.
-   For confidentiality, enable **TLS** (section 5). On a closed lab network or
-   between VMs on one host, plaintext is acceptable for learning.
-
-5. **Audit logging everywhere.** The console logs connection events and every
-   operator command; the agent logs every command it is asked to run *before*
-   running it. Transparency is the opposite of how malware behaves, and it is
-   what makes this a *defensible* administration tool.
+No installation needed — it uses only the Python standard library
+(Python 3.7+).
 
 ---
 
-## 3. Files
+## How the "algorithm" works
 
-| File | Role |
-|---|---|
-| `protocol.py` | Shared wire protocol: framing, mutual HMAC auth, optional TLS, secret loading. |
-| `agent.py` | The managed endpoint. Reports info and runs commands. Run on the target/VM. |
-| `console.py` | Terminal operator console (raw TCP). Run on your admin machine. |
-| `webconsole.py` | **Web** operator console (FastAPI). Serves the browser UI + agent WebSocket endpoint. Deploy this to Railway. |
-| `static/` | The browser dashboard (`index.html`, `login.html`, `style.css`, `app.js`). |
-| `Procfile`, `railway.json` | Deployment configuration for Railway. |
-| `requirements.txt` | Dependencies (`psutil`, `websocket-client`, plus `fastapi`/`uvicorn` for the web console). |
+1. **Defaults first.** Until you've logged enough posts, scheduling uses
+   aggregated best-practice posting windows as sensible starting points.
+2. **Then it learns you.** Once you've logged **10+ posts**, the schedule and
+   stats rebuild themselves from *your* audience's real behaviour — your best
+   day, your best times, and the hashtags that actually drive your views.
+3. **The loop.** Batch-film → `score` each idea → post at your slots → engage
+   early → `log` results → `stats` weekly → double down on what works.
 
-There are **two** consoles that do the same job through different interfaces:
-`console.py` is a terminal program for local/LAN use; `webconsole.py` is a web
-app for browser access and cloud hosting. Pick whichever suits you — agents work
-with both.
+The three non-negotiables it keeps pushing:
 
----
-
-## 4. Setup
-
-```bash
-# 1. (Recommended) create a virtual environment
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-# 2. install the one dependency
-python -m pip install -r requirements.txt
-
-# 3. choose a strong shared secret and export it on BOTH machines
-export RAT_SHARED_SECRET='correct-horse-battery-staple-change-me'
-#   (Windows PowerShell:  $env:RAT_SHARED_SECRET = '...')
-```
-
-The secret is read from the `RAT_SHARED_SECRET` environment variable so it never
-appears in source code or the process list. (`--secret` exists for quick demos
-but is less secure because it is visible in `ps`.)
+1. **Hook** — earn the first 2 seconds or nothing else matters.
+2. **Completion** — short videos with a payoff get shown to more people.
+3. **Consistency** — one post a day for 30 days beats 30 posts in one day.
 
 ---
 
-## 5. Running it
+## Honest caveats
 
-### Quick local test (one machine, two terminals)
-
-**Terminal A — start the console (server):**
-```bash
-python console.py --host 127.0.0.1 --port 9009
-```
-
-**Terminal B — start the agent (client) in safe mode:**
-```bash
-python agent.py --host 127.0.0.1 --port 9009
-```
-
-On connect, the console prints the agent's system information. Then drive it from
-the console prompt:
-
-```
-> list
-> use 1
-> info
-> ping
-> exec uptime
-> exec disk
-> disconnect
-> quit
-```
-
-### Enabling arbitrary command execution (the full "remote control")
-
-Start the agent with `--allow-shell`. It will refuse to proceed until you type
-`I CONSENT` at the keyboard, and it logs every command:
-
-```bash
-python agent.py --host 127.0.0.1 --port 9009 --allow-shell
-```
-
-Now `exec` on the console can run any command line on the agent, e.g.
-`exec ls -la /tmp`. **Use this only on a machine you control.**
-
-### On a local network or between virtual machines
-
-1. Run `console.py` on the operator host; note its LAN IP (e.g. `192.168.1.50`).
-2. Make sure the console's port (default `9009`) is allowed through its firewall.
-3. On the managed host/VM, point the agent at that IP:
-   ```bash
-   python agent.py --host 192.168.1.50 --port 9009
-   ```
-4. Set the **same** `RAT_SHARED_SECRET` on both machines.
-
-A typical safe lab setup: two VMs on a host-only / internal network so the
-traffic never leaves your computer.
-
-### Adding TLS encryption (recommended beyond a closed lab)
-
-Generate a self-signed certificate for the console:
-
-```bash
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout console_key.pem -out console_cert.pem \
-  -days 365 -subj "/CN=localhost"
-```
-
-Start the console with TLS, and point the agent at the certificate so it can
-verify (and thus resist man-in-the-middle attacks):
-
-```bash
-# console
-python console.py --port 9009 --tls-cert console_cert.pem --tls-key console_key.pem
-
-# agent (copy console_cert.pem to the agent machine first)
-python agent.py --host <console-ip> --port 9009 --ca-cert console_cert.pem
-```
-
-> The self-signed certificate's `CN` must match the `--host` the agent dials
-> (use `localhost`/`127.0.0.1` for local tests, or the console's hostname/IP on
-> a LAN). For real deployments use a certificate from a trusted CA.
-
----
-
-## 5b. Web UI
-
-`webconsole.py` is a single [FastAPI](https://fastapi.tiangolo.com/) app that
-serves the operator dashboard, a small JSON API, and the agent WebSocket
-endpoint — all on one HTTP(S) port, which is exactly what cloud hosts like
-Railway expect.
-
-```
-  Browser ──HTTPS (operator login)──┐
-                                     ▼
-                          webconsole.py  (FastAPI / uvicorn)
-                                     ▲
-  Agents  ──WSS (shared-secret HMAC)─┘   path: /ws/agent
-```
-
-Two independent credentials are required, by design:
-
-* **Operator password** (`RAT_OPERATOR_PASSWORD`) — the human logs into the web
-  UI with this. Because the UI is internet-reachable when hosted, this password
-  is what stops a stranger who finds the URL from driving your agents.
-* **Shared secret** (`RAT_SHARED_SECRET`) — agents authenticate with this via
-  the mutual HMAC handshake. It is never transmitted.
-
-### Run the web console locally
-
-```bash
-export RAT_SHARED_SECRET='change-me-strong'
-export RAT_OPERATOR_PASSWORD='change-me-too'
-python -m pip install -r requirements.txt
-
-# start the web console (http://127.0.0.1:9090)
-uvicorn webconsole:app --host 0.0.0.0 --port 9090
-```
-
-Open <http://127.0.0.1:9090>, log in, then in another terminal start an agent
-pointed at the WebSocket endpoint:
-
-```bash
-export RAT_SHARED_SECRET='change-me-strong'
-python agent.py --ws-url ws://127.0.0.1:9090/ws/agent          # safe mode
-# or, for arbitrary command execution (asks for explicit consent):
-python agent.py --ws-url ws://127.0.0.1:9090/ws/agent --allow-shell
-```
-
-The agent appears in the dashboard with its system info; click it to view
-details and run commands.
-
-### Deploy to Railway
-
-1. Push this repository to GitHub and create a new Railway project **from that
-   repo**. Railway auto-detects Python (via `requirements.txt`) and uses the
-   `Procfile` / `railway.json` start command:
-   `uvicorn webconsole:app --host 0.0.0.0 --port $PORT`.
-2. In the Railway service **Variables**, set:
-   * `RAT_SHARED_SECRET` — a long random string.
-   * `RAT_OPERATOR_PASSWORD` — a strong, unique password.
-3. Under **Settings → Networking**, generate a public domain. Railway terminates
-   TLS at its edge, so your app is reachable at `https://<app>.up.railway.app`
-   and agents use the matching `wss://` URL automatically.
-4. Open the domain in a browser and log in.
-5. On each machine/VM you administer, run the agent against the public endpoint:
-   ```bash
-   export RAT_SHARED_SECRET='<same value you set in Railway>'
-   python agent.py --ws-url wss://<app>.up.railway.app/ws/agent
-   ```
-
-> ⚠️ **Public hosting raises the stakes.** Once deployed, the console is a
-> publicly reachable administration panel. Use a strong, unique operator
-> password and shared secret; keep agents in safe (allowlist) mode unless you
-> specifically need `--allow-shell`; and only connect agents on machines you own
-> or are authorised to manage. The in-memory operator sessions and single shared
-> secret are deliberately simple for learning — see the limitations below before
-> trusting this with anything that matters.
-
-### Using it from your phone (no laptop)
-
-You do **not** need a laptop. The operator console is a web app and the UI is
-mobile-responsive, so you can both deploy it and drive it entirely from a phone
-browser. The code is already on GitHub, and Railway builds straight from GitHub —
-so you never need a terminal or `git push` from a computer.
-
-**A. Deploy to Railway from your phone (browser only)**
-
-1. The code is already on GitHub on the branch
-   `claude/python-remote-admin-tool-xvs3s5`.
-2. In your phone's browser, open **railway.app** and sign in with GitHub.
-3. **New Project → Deploy from GitHub repo →** pick the repository, then choose
-   that branch.
-4. Railway auto-detects Python (`requirements.txt`) and uses the `Procfile` /
-   `railway.json` start command — there is nothing to configure for the build.
-5. Open the service's **Variables** tab and add:
-   * `RAT_SHARED_SECRET` — a long random string.
-   * `RAT_OPERATOR_PASSWORD` — a strong password (this is your dashboard login).
-6. **Settings → Networking → Generate Domain.** Wait for the deploy to turn
-   green.
-
-> On a phone, stick with the single shared secret above. The per-agent
-> `RAT_CREDENTIALS_FILE` option needs a file placed on the host, which is awkward
-> to set up without a computer.
-
-**B. Operate the dashboard from your phone**
-
-1. Open `https://<app>.up.railway.app` in your phone browser.
-2. Log in with your `RAT_OPERATOR_PASSWORD`. The layout collapses to a single
-   column on narrow screens.
-3. The agent list, system-info cards, and the command box all work by tap; the
-   list refreshes itself every couple of seconds.
-
-> **Heads-up:** the dashboard will be **empty until an agent connects.** With
-> only a phone you have nothing to manage yet — the console is the *controller*,
-> and you still need to run `agent.py` somewhere to have a device to view or
-> control. The usual options are a cloud VM/computer you own, or the phone
-> itself via [Termux](https://termux.dev/) on Android. Ask and I can write a
-> step-by-step Termux agent guide.
-
----
-
-## 6. Security model & limitations (read this)
-
-This is a **teaching tool**, not production software. It deliberately keeps the
-code small and readable, which means it omits things a real agent would need:
-
-- **No authorisation tiers.** Anyone with the shared secret has full access.
-  Real systems use per-user keys, roles, and revocation.
-- **Shared secret, not per-agent keys.** A leaked secret compromises everything.
-  Production tools use unique per-agent credentials (e.g. mutual-TLS client
-  certs).
-- **No sandboxing of `--allow-shell`.** Commands run with the agent user's full
-  privileges. That is exactly why it is off by default and consent-gated.
-- **Plaintext unless you enable TLS.** Always enable TLS off a closed network.
-- **No persistence / auto-start, by design.** The agent only runs when you start
-  it. This tool will never install itself, hide, or survive a reboot — those are
-  hallmarks of malware, not administration software.
-
-### What makes this *administration* and not *malware*
-
-| Administration tool (this) | Malware / backdoor |
-|---|---|
-| Runs only when explicitly started | Persists & auto-starts covertly |
-| Loud banner; logs everything | Hides; avoids logging |
-| Consent required for shell mode | No consent, ever |
-| Run on machines you own/are authorised for | Deployed without owner knowledge |
-| Mutual auth so the *agent* trusts the console | One-way control |
-
-Keep your use on the left side of that table.
-
----
-
-## 7. Ideas for further learning
-
-- Replace the shared secret with per-agent mutual-TLS client certificates.
-- Add an operator allow/deny audit trail signed so logs cannot be altered.
-- Add a rate limiter / lockout after repeated auth failures.
-- Stream long-running command output instead of buffering it.
-- Add a command allowlist *policy file* the agent loads at start.
+* **No one can guarantee views.** TikTok's recommendation system is private and
+  changes constantly. This tool encodes public best practices and helps you
+  measure and improve — it's an edge on top of good content, not a substitute.
+* **It does not post for you, and it uses no bots or fake engagement.** Those
+  violate TikTok's Terms of Service, get accounts shadow-banned or removed, and
+  don't build a real audience. This is a strategy + analytics assistant only.
+* The biggest lever is always **good content + consistency**. Timing and
+  hashtags are the small percentages on top.
