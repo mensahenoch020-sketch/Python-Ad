@@ -223,7 +223,28 @@ def cmd_schedule(data: dict) -> None:
     print(f"Source: {source}  (timezone: {profile.get('tz', 'local')})")
     print(f"Target: {ppw} videos / week\n")
 
-    ranked = sorted(slots, key=lambda s: s[2], reverse=True)[:ppw]
+    # Spread posts ACROSS days before doubling up: pick each day's single
+    # best slot first, rank days by that slot's strength, and take as many
+    # distinct days as you post per week. This guarantees daily cadence
+    # (including weekends at 7/week) instead of clustering on strong days.
+    best_per_day = {}
+    for day, hour, strength in slots:
+        cur = best_per_day.get(day)
+        if cur is None or strength > cur[2]:
+            best_per_day[day] = (day, hour, strength)
+    day_slots = sorted(best_per_day.values(),
+                       key=lambda s: (-s[2], DAY_ORDER.index(s[0])))
+
+    if ppw <= len(day_slots):
+        ranked = day_slots[:ppw]
+    else:
+        # Posting more than once a day: fill the rest from next-best slots.
+        ranked = list(day_slots)
+        used = {(d, h) for d, h, _ in ranked}
+        extra = sorted((s for s in slots if (s[0], s[1]) not in used),
+                       key=lambda s: -s[2])
+        ranked += extra[:ppw - len(day_slots)]
+
     ranked.sort(key=lambda s: (DAY_ORDER.index(s[0]), s[1]))
 
     for day, hour, strength in ranked:
